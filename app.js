@@ -21,6 +21,27 @@ const MOCK_DEPLOYMENTS = [
   { id: 'dep-002', repo: 'data-worker', branch: 'main',      commit: '1a2b3c4', status: 'success', duration: '1m 44s', ago: '3 days ago', port: 8000 },
 ];
 
+/* ── Version 2 State & Metrics ── */
+let activeContainers = [
+  { name: 'hchi-dashboard', status: 'running', port: 3000, image: 'hchi-dashboard:v2.0-beta' },
+  { name: 'pi-hole', status: 'running', port: 80, image: 'pihole/pihole:latest' },
+  { name: 'home-assistant', status: 'running', port: 8123, image: 'homeassistant/home-assistant:stable' },
+  { name: 'node-red', status: 'stopped', port: 1880, image: 'nodered/node-red:latest' }
+];
+
+let clusterNodes = [
+  { name: 'pi5-master', role: 'Master / Docker Node', status: 'online', cpu: 28, mem: 52, temp: 48, disk: 42, uptime: '12d 4h' },
+  { name: 'pi5-worker-01', role: 'Worker / Node-Red', status: 'online', cpu: 14, mem: 34, temp: 42, disk: 18, uptime: '8d 18h' },
+  { name: 'proxmox-vm-01', role: 'HomeAssistant / DB', status: 'online', cpu: 19, mem: 62, temp: 38, disk: 55, uptime: '45d 1h' },
+  { name: 'homelab-nas', role: 'Samba / Media Server', status: 'online', cpu: 8, mem: 24, temp: 35, disk: 78, uptime: '124d 9h' }
+];
+
+const chartHistory = {
+  cpu: Array(30).fill(28),
+  mem: Array(30).fill(52),
+  maxSize: 30
+};
+
 const LOG_TEMPLATES = {
   success: (d) => `\x1b[step][GitHub Actions] Workflow triggered on push to ${d.branch}
 [info] Runner: ubuntu-latest → dispatching to Pi 5 (192.168.1.100)
@@ -84,6 +105,16 @@ function initTabs() {
       const panel = $('tab-' + tab);
       panel.classList.add('active');
       panel.hidden = false;
+
+      if (tab === 'dashboard') {
+        initMetricsChart();
+        drawMetricsChart();
+      } else if (tab === 'cluster') {
+        renderCluster();
+      } else if (tab === 'terminal') {
+        const termInput = $('terminal-input');
+        if (termInput) setTimeout(() => termInput.focus(), 50);
+      }
     });
   });
 }
@@ -170,6 +201,354 @@ function updateMetrics() {
   setBar('bar-disk', disk); setVal('val-disk', disk.toFixed(1) + '%');
   setBar('bar-net',  net);  setVal('val-net',  net.toFixed(1)  + ' MB/s');
   setVal('info-uptime', fmtUptime(upSeconds));
+
+  // Version 2 Updates
+  // 1. Scrolling canvas performance chart
+  chartHistory.cpu.push(cpu);
+  chartHistory.cpu.shift();
+  chartHistory.mem.push(mem);
+  chartHistory.mem.shift();
+  drawMetricsChart();
+
+  // 2. Homelab cluster node load updates
+  updateClusterMetrics();
+}
+
+/* ============================================================
+   REAL-TIME PERFORMANCE CHART (Canvas-based scrolling area)
+   ============================================================ */
+function initMetricsChart() {
+  const canvas = $('metrics-chart');
+  if (!canvas) return;
+  const dpr = window.devicePixelRatio || 1;
+  const rect = canvas.getBoundingClientRect();
+  canvas.width = rect.width * dpr;
+  canvas.height = rect.height * dpr;
+  const ctx = canvas.getContext('2d');
+  ctx.scale(dpr, dpr);
+}
+
+function drawMetricsChart() {
+  const canvas = $('metrics-chart');
+  if (!canvas) return;
+  const ctx = canvas.getContext('2d');
+  const dpr = window.devicePixelRatio || 1;
+  const width = canvas.width / dpr;
+  const height = canvas.height / dpr;
+
+  ctx.clearRect(0, 0, width, height);
+
+  // Draw Grid Lines
+  ctx.strokeStyle = 'rgba(255, 255, 255, 0.05)';
+  ctx.lineWidth = 1;
+  const lines = 4;
+  for (let i = 1; i < lines; i++) {
+    const y = (height / lines) * i;
+    ctx.beginPath();
+    ctx.moveTo(0, y);
+    ctx.lineTo(width, y);
+    ctx.stroke();
+  }
+
+  const pointsCount = chartHistory.cpu.length;
+  const stepX = width / (pointsCount - 1);
+
+  // Helper to draw filled lines
+  function drawLine(history, strokeColor, fillColor) {
+    ctx.beginPath();
+    history.forEach((val, i) => {
+      const x = i * stepX;
+      const y = height - (val / 100) * (height - 30) - 15;
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    });
+    ctx.strokeStyle = strokeColor;
+    ctx.lineWidth = 2.5;
+    ctx.stroke();
+
+    // Fill Area
+    ctx.lineTo(width, height);
+    ctx.lineTo(0, height);
+    ctx.closePath();
+    ctx.fillStyle = fillColor;
+    ctx.fill();
+  }
+
+  // Draw Memory Area Chart
+  drawLine(chartHistory.mem, '#06b6d4', 'rgba(6, 182, 212, 0.06)');
+
+  // Draw CPU Area Chart
+  drawLine(chartHistory.cpu, '#a78bfa', 'rgba(167, 139, 250, 0.09)');
+}
+
+/* ============================================================
+   ACTIVE CONTAINERS CONTROL PANEL
+   ============================================================ */
+function renderContainers() {
+  const list = $('containers-list');
+  if (!list) return;
+  list.innerHTML = activeContainers.map(c => {
+    let statusClass = 'status-pill--queued';
+    let statusLabel = c.status;
+    let actionsHtml = '';
+
+    if (c.status === 'running') {
+      statusClass = 'status-pill--success';
+      statusLabel = 'running';
+      actionsHtml = `
+        <button class="c-btn c-btn--stop" data-name="${c.name}">Stop</button>
+        <button class="c-btn c-btn--restart" data-name="${c.name}">Restart</button>
+      `;
+    } else if (c.status === 'stopped') {
+      statusClass = 'status-pill--failed';
+      statusLabel = 'stopped';
+      actionsHtml = `
+        <button class="c-btn" data-name="${c.name}">Start</button>
+        <button class="c-btn c-btn--restart" data-name="${c.name}">Restart</button>
+      `;
+    } else {
+      statusClass = 'status-pill--running';
+      statusLabel = c.status;
+      actionsHtml = `<span style="font-size:11px;color:var(--text-muted);padding:4px 8px;">Pending...</span>`;
+    }
+
+    return `
+      <div class="container-item">
+        <div class="container-info">
+          <div class="container-name-row">
+            <span class="container-name">${c.name}</span>
+            <span class="status-pill ${statusClass}" style="padding: 1px 7px; font-size: 10px;">${statusLabel}</span>
+          </div>
+          <span class="container-status">${c.image} · port <span class="container-port">${c.port}</span></span>
+        </div>
+        <div class="container-actions">
+          ${actionsHtml}
+        </div>
+      </div>
+    `;
+  }).join('');
+  
+  const activeCount = activeContainers.filter(c => c.status === 'running').length;
+  $('containers-count').textContent = `${activeCount} active`;
+}
+
+window.stopContainer = (name) => {
+  const c = activeContainers.find(x => x.name === name);
+  if (!c) return;
+  c.status = 'stopping';
+  renderContainers();
+  showToast(`Stopping container ${name}...`, 'info');
+  setTimeout(() => {
+    c.status = 'stopped';
+    renderContainers();
+    showToast(`Container ${name} stopped.`, 'error');
+  }, 1200);
+};
+
+window.startContainer = (name) => {
+  const c = activeContainers.find(x => x.name === name);
+  if (!c) return;
+  c.status = 'starting';
+  renderContainers();
+  showToast(`Starting container ${name}...`, 'info');
+  setTimeout(() => {
+    c.status = 'running';
+    renderContainers();
+    showToast(`Container ${name} is now online.`, 'success');
+  }, 1200);
+};
+
+window.restartContainer = (name) => {
+  const c = activeContainers.find(x => x.name === name);
+  if (!c) return;
+  c.status = 'restarting';
+  renderContainers();
+  showToast(`Restarting container ${name}...`, 'info');
+  setTimeout(() => {
+    c.status = 'running';
+    renderContainers();
+    showToast(`Container ${name} restarted successfully.`, 'success');
+  }, 1500);
+};
+
+function initContainerActions() {
+  const list = $('containers-list');
+  if (!list) return;
+  list.addEventListener('click', (e) => {
+    const btn = e.target.closest('button');
+    if (!btn) return;
+    const name = btn.dataset.name;
+    if (btn.classList.contains('c-btn--stop')) {
+      window.stopContainer(name);
+    } else if (btn.classList.contains('c-btn--restart')) {
+      window.restartContainer(name);
+    } else {
+      window.startContainer(name);
+    }
+  });
+}
+
+/* ============================================================
+   MULTI-NODE CLUSTER HEALTH MONITOR
+   ============================================================ */
+function renderCluster() {
+  const grid = $('cluster-grid');
+  if (!grid) return;
+  grid.innerHTML = clusterNodes.map(node => {
+    const tempClass = node.temp < 45 ? 'temp-status--cool' : node.temp < 60 ? 'temp-status--warm' : 'temp-status--hot';
+    const statusClass = node.status === 'online' ? 'online' : 'offline';
+    return `
+      <div class="node-card ${statusClass}">
+        <div class="node-card-header">
+          <div class="node-identity">
+            <span class="node-name">${node.name}</span>
+            <span class="node-role">${node.role}</span>
+          </div>
+          <span class="node-status-badge ${statusClass}">${node.status}</span>
+        </div>
+        <div class="node-metrics-stack">
+          <div class="node-metric-row">
+            <span class="nm-label">CPU Load</span>
+            <span class="nm-val">${node.cpu.toFixed(1)}%</span>
+          </div>
+          <div class="node-metric-row">
+            <span class="nm-label">RAM Usage</span>
+            <span class="nm-val">${node.mem.toFixed(1)}%</span>
+          </div>
+          <div class="node-metric-row">
+            <span class="nm-label">Disk Space</span>
+            <span class="nm-val">${node.disk.toFixed(0)}%</span>
+          </div>
+          <div class="node-metric-row">
+            <span class="nm-label">Uptime</span>
+            <span class="nm-val">${node.uptime}</span>
+          </div>
+        </div>
+        <div class="node-temperature">
+          <svg class="temp-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 14.76V3.5a2.5 2.5 0 0 0-5 0v11.26a4.5 4.5 0 1 0 5 0z"/></svg>
+          <span>Temp: <strong class="temp-val ${tempClass}">${node.temp.toFixed(1)}°C</strong></span>
+        </div>
+      </div>
+    `;
+  }).join('');
+}
+
+function updateClusterMetrics() {
+  clusterNodes.forEach(node => {
+    if (node.status === 'online') {
+      node.cpu = jitter(node.cpu, 12);
+      node.mem = jitter(node.mem, 4);
+      node.temp = jitter(node.temp, 2.5);
+      node.disk = jitter(node.disk, 0.1);
+    }
+  });
+  renderCluster();
+}
+
+/* ============================================================
+   INTERACTIVE SSH TERMINAL MOCKUP
+   ============================================================ */
+function initTerminal() {
+  const form = $('terminal-form');
+  const input = $('terminal-input');
+  if (!form || !input) return;
+
+  form.addEventListener('submit', (e) => {
+    e.preventDefault();
+    const cmd = input.value.trim();
+    input.value = '';
+    if (!cmd) return;
+
+    appendTerminalLine(`pi@pi5:~$ ${cmd}`, 'user-line');
+    processTerminalCommand(cmd);
+  });
+}
+
+function appendTerminalLine(text, className = '') {
+  const output = $('terminal-output');
+  if (!output) return;
+  const line = document.createElement('div');
+  line.className = `terminal-line ${className}`;
+  line.innerHTML = text;
+  output.appendChild(line);
+  output.scrollTop = output.scrollHeight;
+}
+
+function processTerminalCommand(cmdText) {
+  const args = cmdText.split(/\s+/);
+  const cmd = args[0].toLowerCase();
+
+  setTimeout(() => {
+    switch (cmd) {
+      case 'help':
+        appendTerminalLine('Available custom HCHI commands:', 'output-info');
+        appendTerminalLine('  help                           - Show this help manual');
+        appendTerminalLine('  neofetch                       - Show system specs & ASCII branding');
+        appendTerminalLine('  docker ps                      - Display active running containers');
+        appendTerminalLine('  docker restart &lt;container&gt;    - Restart a designated container');
+        appendTerminalLine('  top                            - Render active load & process stats');
+        appendTerminalLine('  clear                          - Flush terminal output');
+        break;
+      case 'clear':
+        const output = $('terminal-output');
+        if (output) output.innerHTML = '';
+        break;
+      case 'neofetch':
+        appendTerminalLine(`
+<span style="color:#ef4444">   .---.  .---.</span>     <span style="color:#a78bfa">pi@raspberrypi5.local</span>
+<span style="color:#ef4444">  /     \\/     \\</span>    ---------------------
+<span style="color:#10b981">  \\\\  _  /  _  //</span>    OS: HCHI Linux (Ubuntu 24.04 ARM64)
+<span style="color:#ef4444">   \\\\// \\\\// \\\\//</span>     Kernel: 6.8.0-1008-raspi
+<span style="color:#ef4444">    /  \\  /  \\</span>      Uptime: ${fmtUptime(upSeconds)}
+<span style="color:#ef4444">   |    ||    |</span>     Shell: bash 5.2.21
+<span style="color:#ef4444">    \\  /  \\  /</span>      CPU: BCM2712 Cortex-A76 (4 Cores)
+<span style="color:#ef4444">     \`---'---'</span>       Memory: ${Math.round((mem/100)*8192)}MB / 8192MB (8GB)
+                     Board: Raspberry Pi 5 Model B Rev 1.0
+        `, 'output-info');
+        break;
+      case 'docker':
+        if (args[1] === 'ps') {
+          appendTerminalLine('CONTAINER ID   IMAGE                                 STATUS          PORTS', 'output-info');
+          activeContainers.forEach((c, idx) => {
+            const id = 'bf9d81' + idx;
+            const statusStr = c.status === 'running' ? 'Up 4 hours' : 'Exited (0) 10m ago';
+            appendTerminalLine(`${id}       ${c.image.padEnd(36)}  ${statusStr.padEnd(14)}  0.0.0.0:${c.port}-&gt;${c.port}/tcp`);
+          });
+        } else if (args[1] === 'restart') {
+          const target = args[2];
+          if (!target) {
+            appendTerminalLine('Error: docker restart needs a container name argument. Usage: docker restart [name]', 'output-error');
+            break;
+          }
+          const c = activeContainers.find(x => x.name === target);
+          if (!c) {
+            appendTerminalLine(`Error: container "${target}" not found.`, 'output-error');
+          } else {
+            appendTerminalLine(`Triggered restart signal for container "${target}"...`, 'output-info');
+            window.restartContainer(target);
+            setTimeout(() => {
+              appendTerminalLine(`Container "${target}" restart complete.`, 'output-success');
+            }, 1500);
+          }
+        } else {
+          appendTerminalLine('Docker usage: docker [ps | restart &lt;container_name&gt;]', 'output-warn');
+        }
+        break;
+      case 'top':
+        appendTerminalLine(`top - ${new Date().toLocaleTimeString()} up ${fmtUptime(upSeconds)}, 1 user, load average: 0.28, 0.15, 0.10`, 'output-info');
+        appendTerminalLine(`Tasks: 82 total, 1 running, 81 sleeping`, 'output-info');
+        appendTerminalLine(`%Cpu(s): ${cpu.toFixed(1)} us, 2.1 sy, 90.0 id`, 'output-info');
+        appendTerminalLine(`MiB Mem: 8192.0 total, ${Math.round((mem/100)*8192)}.0 used, ${(8192 - Math.round((mem/100)*8192))}.0 free`, 'output-info');
+        appendTerminalLine('', 'output-info');
+        appendTerminalLine('  PID USER      PR  NI    VIRT    RES    SHR S  %CPU  %MEM     TIME+ COMMAND', 'output-info');
+        appendTerminalLine(' 2132 pi        20   0  782104  82410  39120 S   5.8   1.0   0:18.42 dockerd', 'output-info');
+        appendTerminalLine(' 3110 pi        20   0   48120  14120   8120 R   3.1   0.2   0:01.05 top', 'output-info');
+        appendTerminalLine('  902 root      20   0       0      0      0 S   0.5   0.0   0:11.48 kworker/u:2', 'output-info');
+        break;
+      default:
+        appendTerminalLine(`bash: ${cmd}: command not found. Type 'help' to review allowed actions.`, 'output-error');
+    }
+  }, 120);
 }
 
 /* ============================================================
@@ -451,6 +830,13 @@ document.addEventListener('DOMContentLoaded', () => {
   initCanvas();
   initTabs();
 
+  // Version 2 initializations
+  initMetricsChart();
+  renderContainers();
+  initContainerActions();
+  renderCluster();
+  initTerminal();
+
   // Initial render
   renderPipeline(-1);
   refreshTables();
@@ -460,6 +846,12 @@ document.addEventListener('DOMContentLoaded', () => {
   // Start live metrics loop
   updateMetrics(); // immediate
   setInterval(updateMetrics, 2000);
+
+  // Redraw chart on resize
+  window.addEventListener('resize', () => {
+    initMetricsChart();
+    drawMetricsChart();
+  });
 
   /* ── Modal ── */
   $('trigger-deploy-btn').addEventListener('click', openModal);
