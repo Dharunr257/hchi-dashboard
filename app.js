@@ -5,6 +5,20 @@
 
 'use strict';
 
+/* ── Theme Persistence Setup ── */
+const THEME_KEY = 'pi5deploy_theme';
+function getSavedTheme() {
+  return localStorage.getItem(THEME_KEY) || 'dark';
+}
+function applyTheme(theme) {
+  if (theme === 'light') {
+    document.documentElement.classList.add('light-theme');
+  } else {
+    document.documentElement.classList.remove('light-theme');
+  }
+}
+applyTheme(getSavedTheme());
+
 /* ── Seeded mock data ── */
 const REPOS = ['my-app', 'api-service', 'frontend-ui', 'data-worker'];
 const BRANCHES = ['main', 'develop', 'release/1.2', 'feature/auth'];
@@ -238,8 +252,25 @@ function drawMetricsChart() {
 
   ctx.clearRect(0, 0, width, height);
 
-  // Draw Grid Lines
-  ctx.strokeStyle = 'rgba(255, 255, 255, 0.05)';
+  // Helper to parse CSS variables
+  function getRgbaFromVar(varName, alpha) {
+    let color = getComputedStyle(document.documentElement).getPropertyValue(varName).trim();
+    const match = color.match(/^rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*([\d.]+))?\)$/);
+    if (match) {
+      return `rgba(${match[1]}, ${match[2]}, ${match[3]}, ${alpha})`;
+    }
+    if (color.startsWith('#')) {
+      const hex = color.replace('#', '');
+      const r = parseInt(hex.substring(0, 2), 16);
+      const g = parseInt(hex.substring(2, 4), 16);
+      const b = parseInt(hex.substring(4, 6), 16);
+      return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+    }
+    return color;
+  }
+
+  // Draw Grid Lines based on active theme border
+  ctx.strokeStyle = getRgbaFromVar('--border', 0.5) || 'rgba(255, 255, 255, 0.05)';
   ctx.lineWidth = 1;
   const lines = 4;
   for (let i = 1; i < lines; i++) {
@@ -274,11 +305,14 @@ function drawMetricsChart() {
     ctx.fill();
   }
 
+  const cpuColor = getComputedStyle(document.documentElement).getPropertyValue('--purple-light').trim() || '#a78bfa';
+  const memColor = getComputedStyle(document.documentElement).getPropertyValue('--cyan').trim() || '#06b6d4';
+
   // Draw Memory Area Chart
-  drawLine(chartHistory.mem, '#06b6d4', 'rgba(6, 182, 212, 0.06)');
+  drawLine(chartHistory.mem, memColor, getRgbaFromVar('--cyan', 0.06));
 
   // Draw CPU Area Chart
-  drawLine(chartHistory.cpu, '#a78bfa', 'rgba(167, 139, 250, 0.09)');
+  drawLine(chartHistory.cpu, cpuColor, getRgbaFromVar('--purple-light', 0.09));
 }
 
 /* ============================================================
@@ -906,6 +940,21 @@ document.addEventListener('DOMContentLoaded', () => {
     if ($('cfg-host').value) $('info-ip').textContent = $('cfg-host').value;
     showToast('Server config saved!', 'success');
   });
+
+  /* ── Theme Toggle Event ── */
+  const themeToggle = $('theme-toggle');
+  if (themeToggle) {
+    themeToggle.addEventListener('click', () => {
+      const currentTheme = getSavedTheme();
+      const newTheme = currentTheme === 'light' ? 'dark' : 'light';
+      localStorage.setItem(THEME_KEY, newTheme);
+      applyTheme(newTheme);
+      showToast(`Switched to ${newTheme} mode`, 'info');
+      // Redraw charts since colors change
+      initMetricsChart();
+      drawMetricsChart();
+    });
+  }
 
   /* ── Welcome toast ── */
   setTimeout(() => showToast('Pi 5 server online · arm64 ready', 'success'), 800);
