@@ -1,4 +1,4 @@
-name: Deploy HCHI Dashboard
+name: HCHI Automated Deployment
 
 on:
   push:
@@ -10,36 +10,6 @@ jobs:
     runs-on: self-hosted
 
     steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v4
-
-      - name: Copy Project To Deployment Directory
+      - name: Trigger HCHI Sync Engine
         run: |
-          rm -rf /mnt/homelab-storage/docker/apps/hchi-dashboard/*
-          cp -r $GITHUB_WORKSPACE/* /mnt/homelab-storage/docker/apps/hchi-dashboard/
-
-      - name: Build Docker Image
-        run: |
-          cd /mnt/homelab-storage/docker/apps/hchi-dashboard
-          docker build -t hchi-dashboard .
-
-      - name: Stop Existing Container
-        run: |
-          docker stop hchi-dashboard || true
-          docker rm hchi-dashboard || true
-
-      - name: Run New Container
-        run: |
-          docker run -d \
-            --name hchi-dashboard \
-            --network homelab-network \
-            -p 3000:80 \
-            hchi-dashboard
-
-      - name: Deployment Information
-        run: |
-          echo "===================================="
-          echo "Deployment Successful!"
-          echo "Application Available At:"
-          echo "http://192.168.1.10:3000"
-          echo "===================================="
+          sync-app hchi-dashboard

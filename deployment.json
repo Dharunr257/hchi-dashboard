@@ -1,0 +1,10 @@
+{
+  "app_name": "hchi-dashboard",
+  "container_name": "hchi-dashboard",
+  "internal_domain": "hchi-dashboard.homelab",
+  "container_port": 80,
+  "host_port": 3000,
+  "health_endpoint": "/health",
+  "restart_policy": "unless-stopped",
+  "network": "homelab-network"
+}
